@@ -5032,32 +5032,29 @@ class DownloadFile {
       if (dlCtrl.downloadStopped) {
         return
       }
+      let file = xhr.response // 要下载的文件
       // 正常下载完毕的状态码是 200
       if (xhr.status !== 200) {
         // 404 时不进行重试，因为重试也依然会是 404
         if (xhr.status === 404) {
           // 输出提示信息
           log.error(lang.transl('_file404', data.id), 1)
+          // 404 错误时创建 txt 文件，并保存提示信息
+          file = new Blob([`${lang.transl('_file404', data.id)}`], {
+            type: 'text/plain'
+          })
+          fullFileName = fullFileName.replace(
+            /\.jpg$|\.png$|\.zip$|\.gif$|\.webm$/,
+            '.txt'
+          )
         } else {
           dlCtrl.reTryDownload()
           return
         }
-      }
-      let file = new Blob() // 要下载的文件
-      if (xhr.status === 404) {
-        // 404 错误时创建 txt 文件，并保存提示信息
-        file = new Blob([`${lang.transl('_file404', data.id)}`], {
-          type: 'text/plain'
-        })
-        fullFileName = fullFileName.replace(
-          /\.jpg$|\.png$|\.zip$|\.gif$|\.webm$/,
-          '.txt'
-        )
       } else if (
         (data.ext === 'webm' || data.ext === 'gif') &&
         data.ugoiraInfo.frames
       ) {
-        file = xhr.response
         // 如果需要转换成视频
         if (data.ext === 'webm') {
           file = await convert.webm(file, data.ugoiraInfo)
@@ -5066,9 +5063,6 @@ class DownloadFile {
         if (data.ext === 'gif') {
           file = await convert.gif(file, data.ugoiraInfo)
         }
-      } else {
-        // 不需要转换
-        file = xhr.response
       }
       // 生成下载链接
       const blobUrl = URL.createObjectURL(file)
