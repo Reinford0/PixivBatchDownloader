@@ -2580,12 +2580,13 @@ class ConvertUgoira {
         this.tip = ''
         this.count = 0 // 统计有几个转换任务
         this.loadWorkerJS()
+        this.working = false
     }
     set setCount(num) {
         this.count = num
         // 在下载区域显示转换数量
         if (this.count > 0) {
-            this.tip = lang.transl('_转换任务提示', this.count.toString())
+            this.tip = '正在转换动图，剩余排队个数：' + (this.count - 1).toString()
         } else {
             this.tip = ''
         }
@@ -2690,7 +2691,6 @@ class ConvertUgoira {
     }
     // 开始转换，主要是解压文件
     async start(file, info) {
-        this.setCount = this.count + 1
         return new Promise(async (resolve, reject) => {
             // 将压缩包里的图片转换为 base64 字符串
             const base64Arr = await this.readZip(file, info)
@@ -2699,6 +2699,7 @@ class ConvertUgoira {
     }
     complete() {
         this.setCount = this.count - 1
+        this.working = false
     }
     // 转换成 webm
     async webm(file, info) {
@@ -4875,6 +4876,7 @@ class DownloadControl {
         if (this.downloadPause === false) {
             // 如果正在下载中
             if (!store.states.allowWork) {
+                convert.working = false
                 this.downloadPause = true // 发出暂停信号
                 evt.fire(evt.events.downloadPause)
                 titleBar.changeTitle('║')
@@ -4892,6 +4894,7 @@ class DownloadControl {
         if (store.result.length === 0 || this.downloadStop) {
             return
         }
+        convert.working = false
         this.downloadStop = true
         evt.fire(evt.events.downloadStop)
         titleBar.changeTitle('■')
@@ -5011,7 +5014,7 @@ class DownloadFile {
         // 获取文件名
         let fullFileName = fileName.getFileName(data)
         // 重设当前下载栏的信息
-        dlCtrl.setDownloadBar(progressBarNo, fullFileName, 0, 0)
+        dlCtrl.setDownloadBar(index, progressBarNo, fullFileName, 0, 0)
         // 下载图片
         let xhr = new XMLHttpRequest()
         xhr.open('GET', data.url, true)
@@ -5024,10 +5027,10 @@ class DownloadFile {
                 return
             }
             e = e || window.event
-            dlCtrl.setDownloadBar(progressBarNo, fullFileName, e.loaded, e.total)
+            dlCtrl.setDownloadBar(index, progressBarNo, fullFileName, e.loaded, e.total)
         })
         // 下载完成
-        xhr.addEventListener('loadend', async () => {
+        xhr.addEventListener('loadend', () => {
             if (dlCtrl.downloadStopped) {
                 xhr = null
                 return
@@ -5055,21 +5058,37 @@ class DownloadFile {
                 (data.ext === 'webm' || data.ext === 'gif') &&
                 data.ugoiraInfo
             ) {
-                // 如果需要转换成视频
-                if (data.ext === 'webm') {
-                    file = await convert.webm(file, data.ugoiraInfo)
-                }
-                // 如果需要转换成动图
-                if (data.ext === 'gif') {
-                    file = await convert.gif(file, data.ugoiraInfo)
-                }
+                convert.setCount = convert.count + 1
+                const interval = setInterval(async () => {
+                    if (dlCtrl.downloadStopped) {
+                        clearInterval(interval);
+                        return
+                    }
+                    if (!convert.working) {
+                        clearInterval(interval);
+                        convert.working = true
+                        // 如果需要转换成视频
+                        if (data.ext === 'webm') {
+                            file = await convert.webm(file, data.ugoiraInfo)
+                        }
+                        // 如果需要转换成动图
+                        if (data.ext === 'gif') {
+                            file = await convert.gif(file, data.ugoiraInfo)
+                        }
+                        down()
+                    }
+                }, 1000);
+                return
             }
-            // 生成下载链接
-            const blobUrl = URL.createObjectURL(file)
-            // 向浏览器发送下载任务
-            this.browserDownload(blobUrl, fullFileName, progressBarNo, index)
-            xhr = null
-            file = null
+            down()
+            function down() {
+                // 生成下载链接
+                const blobUrl = URL.createObjectURL(file)
+                // 向浏览器发送下载任务
+                dlFile.browserDownload(blobUrl, fullFileName, progressBarNo, index)
+                xhr = null
+                file = null
+            }
         })
         xhr.send()
     }
