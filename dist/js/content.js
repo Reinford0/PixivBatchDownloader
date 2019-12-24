@@ -4584,6 +4584,7 @@ class DownloadControl {
     constructor() {
         this.downloadThreadMax = 5 // 同时下载的线程数的最大值，也是默认值
         this.downloadThread = this.downloadThreadMax // 同时下载的线程数
+        this.threadStamp = 0
         this.taskBatch = 0 // 标记任务批次，每次重新下载时改变它的值，传递给后台使其知道这是一次新的下载
         this.downloadStatesList = [] // 标记每个下载任务的完成状态
         this.downloaded = 0 // 已下载的任务数量
@@ -4813,6 +4814,10 @@ class DownloadControl {
         if (!store.states.allowWork || store.result.length === 0) {
             return
         }
+        this.threadStamp = new Date().getTime();
+        store.result.forEach(data => {
+            data.reTry = 0;
+        })
         // 如果之前不是暂停状态，则需要重新下载
         if (!this.downloadPause) {
             this.setDownloaded = 0
@@ -5008,7 +5013,7 @@ class DownloadFile {
         })
     }
     // 下载文件。参数是要使用的下载栏的序号
-    download(data, index, progressBarNo, taskBatch) {
+    download(data, index, progressBarNo, taskBatch, thisThreadStamp = dlCtrl.threadStamp) {
         titleBar.changeTitle('↓')
         this.taskBatch = taskBatch
         // 获取文件名
@@ -5021,7 +5026,7 @@ class DownloadFile {
         xhr.responseType = 'blob'
         // 显示下载进度
         xhr.addEventListener('progress', function (e) {
-            if (dlCtrl.downloadStopped) {
+            if (dlCtrl.downloadStopped || thisThreadStamp !== dlCtrl.threadStamp) {
                 xhr.abort()
                 xhr = null
                 return
@@ -5031,27 +5036,29 @@ class DownloadFile {
         })
         // 下载完成
         xhr.addEventListener('loadend', () => {
-            if (dlCtrl.downloadStopped) {
+            if (dlCtrl.downloadStopped || thisThreadStamp !== dlCtrl.threadStamp) {
                 xhr = null
                 return
             }
             let file = xhr.response // 要下载的文件
             // 正常下载完毕的状态码是 200
             if (xhr.status !== 200) {
-                // 404 时不进行重试，因为重试也依然会是 404
+                data.reTry++;
                 if (xhr.status === 404) {
-                    // 输出提示信息
-                    log.error(lang.transl('_file404', data.id), 1)
-                    // 404 错误时创建 txt 文件，并保存提示信息
-                    file = new Blob([`${lang.transl('_file404', data.id)}`], {
-                        type: 'text/plain'
-                    })
-                    fullFileName = fullFileName.replace(
-                        /\.jpg$|\.png$|\.zip$|\.gif$|\.webm$/,
-                        '.txt'
-                    )
+                    if (data.reTry > 50) {
+                        // 输出提示信息
+                        log.error(lang.transl('_file404', data.id), 1)
+                        // 404 错误时创建 txt 文件，并保存提示信息
+                        file = new Blob([`${lang.transl('_file404', data.id)}`], { type: 'text/plain' })
+                        fullFileName = fullFileName.replace(/\.jpg$|\.png$|\.zip$|\.gif$|\.webm$/, '.txt')
+                    } else {
+                        log.error('404重试第' + data.reTry + '次，任务序号：' + index)
+                        setTimeout(() => this.download(data, index, progressBarNo, taskBatch, thisThreadStamp), 2000)
+                        return
+                    }
                 } else {
-                    evt.fire(evt.events.downloadError)
+                    log.error('正常重试第' + data.reTry + '次，任务序号：' + index)
+                    setTimeout(() => this.download(data, index, progressBarNo, taskBatch, thisThreadStamp), data.reTry * 1000)
                     return
                 }
             } else if (
@@ -5060,7 +5067,7 @@ class DownloadFile {
             ) {
                 convert.setCount = convert.count + 1
                 const interval = setInterval(async () => {
-                    if (dlCtrl.downloadStopped) {
+                    if (dlCtrl.downloadStopped || thisThreadStamp !== dlCtrl.threadStamp) {
                         clearInterval(interval);
                         return
                     }
@@ -5085,7 +5092,7 @@ class DownloadFile {
                 // 生成下载链接
                 const blobUrl = URL.createObjectURL(file)
                 // 向浏览器发送下载任务
-                dlFile.browserDownload(blobUrl, fullFileName, progressBarNo, index)
+                dlFile.browserDownload(blobUrl, fullFileName, progressBarNo, index, thisThreadStamp)
                 xhr = null
                 file = null
             }
@@ -5093,17 +5100,17 @@ class DownloadFile {
         xhr.send()
     }
     // 向浏览器发送下载任务
-    browserDownload(blobUrl, fullFileName, downloadBarNo, index) {
+    browserDownload(blobUrl, fullFileName, downloadBarNo, index, thisThreadStamp) {
         // 如果前后两次任务的时间间隔小于 time_interval，则延迟一定时间使间隔达到 time_interval。
         const t = new Date().getTime() - this.downloadTime
         if (t < this.timeInterval) {
             setTimeout(() => {
-                this.browserDownload(blobUrl, fullFileName, downloadBarNo, index)
+                this.browserDownload(blobUrl, fullFileName, downloadBarNo, index, thisThreadStamp)
             }, this.timeInterval - t)
             return
         }
         // 如果任务已停止，不会向浏览器发送下载任务
-        if (dlCtrl.downloadStopped) {
+        if (dlCtrl.downloadStopped || thisThreadStamp !== dlCtrl.threadStamp) {
             // 释放 bloburl
             URL.revokeObjectURL(blobUrl)
             return
